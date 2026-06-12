@@ -123,6 +123,12 @@ class RainMachineClient:
     async def get_forecast(self, session: aiohttp.ClientSession) -> dict:
         return await self._get(session, "mixer", query="format=json")
 
+    async def get_forecast_yesterday(self, session: aiohttp.ClientSession) -> dict | None:
+        yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        data = await self._get(session, f"mixer/{yesterday}", query="format=json")
+        entries = data.get("mixerDataByDate", [])
+        return entries[0] if entries else None
+
     async def get_rain_delay(self, session: aiohttp.ClientSession) -> dict:
         return await self._get(session, "restrictions/raindelay")
 
@@ -182,7 +188,11 @@ class RainMachineClient:
         return await self._action(f"zone/{zid}/properties", {"active": active})
 
     async def action_set_zone_et_coef(self, uid: int, value: float) -> dict:
-        return await self._action(f"zone/{uid}/properties", {"ETcoef": round(value, 4)})
+        async with aiohttp.ClientSession() as session:
+            await self.authenticate(session)
+            data = await self._get(session, f"zone/{uid}/properties")
+            data["ETcoef"] = round(value, 4)
+            return await self._post(session, f"zone/{uid}/properties", data)
 
     async def action_start_program(self, pid: int) -> dict:
         return await self._action(f"program/{pid}/start", {"pid": pid})
@@ -355,7 +365,7 @@ class RainMachineClient:
                     data[key] = []
             return data
 
-    async def fetch_all_data(self) -> dict:
+    async def fetch_all_data(self, previous_data: dict | None = None) -> dict:
         async with aiohttp.ClientSession() as session:
             await self.authenticate(session)
             data = {}
@@ -366,6 +376,7 @@ class RainMachineClient:
                 ("details",                  self.get_watering_details(session)),
                 ("watering_yesterday",       self.get_watering_details_yesterday(session)),
                 ("forecast",                 self.get_forecast(session)),
+                ("forecast_yesterday",       self.get_forecast_yesterday(session)),
                 ("raindelay",                self.get_rain_delay(session)),
                 ("zones",                    self.get_zones(session)),
                 ("programs",                 self.get_programs(session)),
@@ -381,5 +392,8 @@ class RainMachineClient:
                     data[key] = await coro
                 except RainMachineApiError as err:
                     _LOGGER.warning("Failed to fetch %s: %s", key, err)
-                    data[key] = [] if key in _LIST_KEYS else {}
+                    if previous_data and key in previous_data:
+                        data[key] = previous_data[key]
+                    else:
+                        data[key] = [] if key in _LIST_KEYS else {}
             return data
